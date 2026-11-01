@@ -3,7 +3,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://unitrack-api.vercel.app/api/:path*"
+      "destination": "https://unitrack-one.vercel.app/api/:path*"
     },
     {
       "source": "/(.*)",
