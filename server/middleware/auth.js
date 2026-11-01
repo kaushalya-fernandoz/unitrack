@@ -7,7 +7,8 @@ const sessionDurationMs = 7 * 24 * 60 * 60 * 1000;
 function cookieOptions() {
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production" || process.env.VERCEL === "1",
+    // The browser calls the API through the frontend's same-origin Vercel rewrite.
     sameSite: "lax",
     path: "/"
   };

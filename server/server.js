@@ -5,6 +5,7 @@ const dotenv = require("dotenv");
 const fs = require("fs");
 const crypto = require("crypto");
 const cookieParser = require("cookie-parser");
+const { connectToDatabase } = require("./database");
 const authRouter = require("./routes/auth");
 const academicsRouter = require("./routes/academics");
 const tasksRouter = require("./routes/tasks");
@@ -12,9 +13,12 @@ const studyRouter = require("./routes/study");
 
 const app = express();
 const envPath = path.join(__dirname, ".env");
-dotenv.config({ path: envPath, override: true });
+const runningOnVercel = process.env.VERCEL === "1";
+const production = process.env.NODE_ENV === "production" || runningOnVercel;
+if (!production) dotenv.config({ path: envPath, override: true });
 
 if (!process.env.JWT_SECRET) {
+  if (production) throw new Error("JWT_SECRET must be set in the production environment.");
   const jwtSecret = crypto.randomBytes(64).toString("base64url");
   fs.appendFileSync(envPath, `${fs.existsSync(envPath) && fs.statSync(envPath).size ? "\n" : ""}JWT_SECRET=${jwtSecret}\n`, { mode: 0o600 });
   process.env.JWT_SECRET = jwtSecret;
@@ -22,7 +26,7 @@ if (!process.env.JWT_SECRET) {
 
 const port = process.env.PORT || 5000;
 
-if (process.env.NODE_ENV === "production") app.set("trust proxy", 1);
+if (production) app.set("trust proxy", 1);
 
 function allowedOrigins(req) {
   const origins = new Set(
@@ -69,6 +73,20 @@ app.use("/api/auth", (req, res, next) => {
   return next();
 });
 
+function requireDatabase(_req, res, next) {
+  connectToDatabase().then(
+    () => next(),
+    (error) => {
+      console.error(`MongoDB connection unavailable (${error.name || "Error"}): ${redactMongoError(error.message)}`);
+      res.status(503).json({
+        error: "database_unavailable",
+        message: "The service is temporarily unavailable. Please try again."
+      });
+    }
+  );
+}
+
+app.use("/api/auth", requireDatabase);
 app.use("/api/auth", authRouter);
 app.use("/api/academics", (req, res, next) => {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
@@ -78,6 +96,7 @@ app.use("/api/academics", (req, res, next) => {
   }
   return next();
 });
+app.use("/api/academics", requireDatabase);
 app.use("/api/academics", academicsRouter);
 app.use("/api/tasks", (req, res, next) => {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
@@ -87,6 +106,7 @@ app.use("/api/tasks", (req, res, next) => {
   }
   return next();
 });
+app.use("/api/tasks", requireDatabase);
 app.use("/api/tasks", tasksRouter);
 app.use("/api/study", (req, res, next) => {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
@@ -96,18 +116,11 @@ app.use("/api/study", (req, res, next) => {
   }
   return next();
 });
+app.use("/api/study", requireDatabase);
 app.use("/api/study", studyRouter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
-});
-
-app.get("/api/ready", (_req, res) => {
-  const ready = mongoose.connection.readyState === 1;
-  res.status(ready ? 200 : 503).json({
-    status: ready ? "ready" : "not_ready",
-    database: mongoose.connection.readyState === 2 ? "connecting" : ready ? "connected" : "disconnected"
-  });
 });
 
 function redactMongoError(message) {
@@ -116,14 +129,28 @@ function redactMongoError(message) {
     .replace(/\b(password|passwd|pwd)\s*[:=]\s*[^,\s]+/gi, "$1=[REDACTED]");
 }
 
-if (process.env.MONGO_URI) {
-  mongoose.connect(process.env.MONGO_URI).catch((error) => {
-    console.error(`MongoDB connection failed (${error.name || "Error"}): ${redactMongoError(error.message)}`);
+app.get("/api/ready", async (_req, res) => {
+  try {
+    await connectToDatabase();
+    return res.status(200).json({ status: "ready", database: "connected" });
+  } catch (error) {
+    console.error(`MongoDB readiness check failed (${error.name || "Error"}): ${redactMongoError(error.message)}`);
+    return res.status(503).json({ status: "not_ready", database: "disconnected" });
+  }
+});
+
+if (!runningOnVercel) {
+  if (process.env.MONGO_URI) {
+    connectToDatabase().catch((error) => {
+      console.error(`MongoDB connection failed (${error.name || "Error"}): ${redactMongoError(error.message)}`);
+    });
+  } else {
+    console.error("MongoDB connection unavailable: MONGO_URI is not configured.");
+  }
+
+  app.listen(port, "127.0.0.1", () => {
+    console.log(`UniTrack API listening at http://127.0.0.1:${port}`);
   });
-} else {
-  console.error("MongoDB connection unavailable: MONGO_URI is not configured.");
 }
 
-app.listen(port, "127.0.0.1", () => {
-  console.log(`UniTrack API listening at http://127.0.0.1:${port}`);
-});
+module.exports = app;
